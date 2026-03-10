@@ -1,0 +1,6 @@
+moviepy<2.0,>=1.0.3
+numpy<3,>=1.24
+opencv-python-headless<5,>=4.7
+tqdm<5,>=4.64
+torch==2.9.1
+torchvision==0.24.1

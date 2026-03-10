@@ -18,9 +18,6 @@
 import argparse
 import math
 import os
-import shutil
-import subprocess
-import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Tuple
@@ -516,83 +513,65 @@ def visualize_video(
             if math.isfinite(estimated_total) and estimated_total > 0:
                 total_frames = int(estimated_total)
 
-    # ── Set up incremental video writer (avoids holding all frames in RAM) ──
-    temp_fd, temp_video_path = tempfile.mkstemp(suffix=".mp4")
-    os.close(temp_fd)
-    width, height = video_reader_clip.size
-
-    ffmpeg_writer = subprocess.Popen(
-        [
-            "ffmpeg", "-y", "-loglevel", "error",
-            "-f", "rawvideo", "-vcodec", "rawvideo",
-            "-s", f"{width}x{height}",
-            "-pix_fmt", "rgb24",
-            "-r", str(output_fps),
-            "-i", "-",
-            "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
-            temp_video_path,
-        ],
-        stdin=subprocess.PIPE,
-    )
-
     # ── Process frames ────────────────────────────────────────────────
+    visualized_frames: List[Optional[np.ndarray]] = []
+
     try:
         with patch_instances(fields=PATCH_INSTANCES_FIELDS):
             frame_iterator = video_reader_clip.iter_frames(fps=output_fps)
 
             if use_multi_gpu:
-                # --- Multi-GPU path: chunked to limit memory ---
-                CHUNK_SIZE = 300  # ~10 seconds at 30fps
-                n_workers = len(devices)
-                chunk: List[np.ndarray] = []
-
+                # --- Multi-GPU path: thread pool, round-robin across GPUs ---
+                # Pre-read all frames (needed to allow parallel submission)
+                raw_frames: List[np.ndarray] = []
                 read_iter = frame_iterator
                 if tqdm is not None:
                     read_iter = tqdm(
                         frame_iterator, total=total_frames,
-                        desc="Processing frames (multi-GPU)", unit="frame",
+                        desc="Reading frames", unit="frame",
                     )
-
-                def _flush_chunk(chunk_frames: List[np.ndarray]) -> None:
-                    """Process a chunk in parallel and stream results to ffmpeg."""
-                    nonlocal total_inference_time, total_blur_time, frame_count
-                    n = len(chunk_frames)
-                    results: List[Optional[np.ndarray]] = [None] * n
-                    with ThreadPoolExecutor(max_workers=n_workers) as pool:
-                        futures = {}
-                        for i, bgr_img in enumerate(chunk_frames):
-                            gpu_idx = i % n_workers
-                            fut = pool.submit(
-                                _process_frame_on_gpu, i, bgr_img,
-                                gpu_face_detectors[gpu_idx],
-                                gpu_lp_detectors[gpu_idx],
-                                scale_factor_detections, devices[gpu_idx],
-                            )
-                            futures[fut] = i
-                        for fut in as_completed(futures):
-                            fidx, vis_rgb, inf_t, blur_t = fut.result()
-                            results[fidx] = vis_rgb
-                            total_inference_time += inf_t
-                            total_blur_time += blur_t
-                    for vis_rgb in results:
-                        ffmpeg_writer.stdin.write(
-                            np.ascontiguousarray(vis_rgb).tobytes()
-                        )
-                        frame_count += 1
-
                 for frame in read_iter:
                     if frame.ndim == 2:
                         frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
-                    chunk.append(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-                    if len(chunk) >= CHUNK_SIZE:
-                        _flush_chunk(chunk)
-                        chunk = []
-                if chunk:
-                    _flush_chunk(chunk)
-
+                    raw_frames.append(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
                 if tqdm is not None and hasattr(read_iter, "close"):
                     read_iter.close()
+
+                frame_count = len(raw_frames)
+                visualized_frames = [None] * frame_count
+
+                n_workers = len(devices)
+                with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                    futures = {}
+                    for idx, bgr_image in enumerate(raw_frames):
+                        gpu_idx = idx % n_workers
+                        fut = pool.submit(
+                            _process_frame_on_gpu,
+                            idx,
+                            bgr_image,
+                            gpu_face_detectors[gpu_idx],
+                            gpu_lp_detectors[gpu_idx],
+                            scale_factor_detections,
+                            devices[gpu_idx],
+                        )
+                        futures[fut] = idx
+
+                    pbar = None
+                    if tqdm is not None:
+                        pbar = tqdm(
+                            total=frame_count,
+                            desc="Inferring (multi-GPU)",
+                            unit="frame",
+                        )
+                    for fut in as_completed(futures):
+                        fidx, vis_rgb, inf_t, blur_t = fut.result()
+                        visualized_frames[fidx] = vis_rgb
+                        total_inference_time += inf_t
+                        total_blur_time += blur_t
+                        if pbar is not None:
+                            pbar.update(1)
+                    if pbar is not None:
+                        pbar.close()
 
             else:
                 # --- Single-GPU path (original behaviour) ---
@@ -657,9 +636,7 @@ def visualize_video(
                             )
 
                         visualized_rgb = cv2.cvtColor(visualized_bgr, cv2.COLOR_BGR2RGB)
-                        ffmpeg_writer.stdin.write(
-                            np.ascontiguousarray(visualized_rgb).tobytes()
-                        )
+                        visualized_frames.append(np.ascontiguousarray(visualized_rgb))
 
                         frame_end_time = time.time()
                         total_frame_time += frame_end_time - frame_start_time
@@ -669,12 +646,8 @@ def visualize_video(
                         progress_iterator.close()
     finally:
         video_reader_clip.close()
-        if ffmpeg_writer.stdin and not ffmpeg_writer.stdin.closed:
-            ffmpeg_writer.stdin.close()
-        ffmpeg_writer.wait()
 
-    if frame_count == 0:
-        os.unlink(temp_video_path)
+    if not visualized_frames or (use_multi_gpu and any(f is None for f in visualized_frames)):
         raise ValueError(
             f"No frames were processed from {input_video_path}. "
             "Please verify the input video file."
@@ -701,34 +674,29 @@ def visualize_video(
         logger.info(f"Effective FPS:        {frame_count / wall_elapsed:.1f}")
         logger.info("=" * 60)
 
-    # ── Mux original audio into the blurred video ─────────────────────
+    clip = ImageSequenceClip(visualized_frames, fps=output_fps)
+    audio_source = None
     try:
-        mux_result = subprocess.run(
-            [
-                "ffmpeg", "-y", "-loglevel", "error",
-                "-i", temp_video_path,
-                "-i", input_video_path,
-                "-c:v", "copy",
-                "-c:a", "aac",
-                "-map", "0:v:0",
-                "-map", "1:a:0?",
-                "-shortest",
-                output_video_path,
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if mux_result.returncode == 0:
-            logger.info("Audio mux complete (audio preserved if present).")
-            os.unlink(temp_video_path)
+        # Preserve original audio if present
+        audio_source = VideoFileClip(input_video_path)
+        original_audio = audio_source.audio
+        if original_audio is not None:
+            clip = clip.set_audio(original_audio)
+            logger.info("Original audio track found and will be preserved.")
         else:
-            logger.info("Audio mux failed; using video-only output.")
-            shutil.move(temp_video_path, output_video_path)
-    except FileNotFoundError:
-        logger.warning("ffmpeg not found for audio mux; using video-only output.")
-        shutil.move(temp_video_path, output_video_path)
+            logger.info("No audio track found in the input video.")
 
-    logger.info(f"Successfully output video to:{output_video_path}")
+        clip.write_videofile(
+            output_video_path,
+            codec="libx264",
+            fps=output_fps,
+            ffmpeg_params=["-pix_fmt", "yuv420p"],
+        )
+        logger.info(f"Successfully output video to:{output_video_path}")
+    finally:
+        if audio_source is not None:
+            audio_source.close()
+        clip.close()
 # def visualize_video(
 #     input_video_path: str,
 #     face_detector: Optional[EgoblurDetector],

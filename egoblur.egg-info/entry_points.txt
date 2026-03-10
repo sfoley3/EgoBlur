@@ -1,0 +1,3 @@
+[console_scripts]
+egoblur-gen1 = gen1.script.demo_ego_blur_gen1:main
+egoblur-gen2 = gen2.script.demo_ego_blur_gen2:main
