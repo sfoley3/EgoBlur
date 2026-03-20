@@ -218,6 +218,7 @@ def _get_threshold(
 #     image_fg = cv2.bitwise_and(image_fg, image_fg, mask=mask)
 #     image = cv2.add(image_bg, image_fg)
 
+
 #     return image
 def visualize(
     image: np.ndarray,
@@ -240,9 +241,7 @@ def visualize(
     for box in detections:
         # Scale bbox if requested
         if scale_factor_detections != 1.0:
-            box = scale_box(
-                box, w_img, h_img, scale_factor_detections
-            )
+            box = scale_box(box, w_img, h_img, scale_factor_detections)
 
         x1, y1, x2, y2 = map(int, box[:4])
 
@@ -465,14 +464,20 @@ def visualize_video(
             for dev in devices[1:]:
                 gpu_face_detectors.append(
                     _create_detector(
-                        face_model_path, dev, ClassID.FACE,
-                        face_threshold, nms_iou_threshold,
+                        face_model_path,
+                        dev,
+                        ClassID.FACE,
+                        face_threshold,
+                        nms_iou_threshold,
                     )
                 )
                 gpu_lp_detectors.append(
                     _create_detector(
-                        lp_model_path, dev, ClassID.LICENSE_PLATE,
-                        lp_threshold, nms_iou_threshold,
+                        lp_model_path,
+                        dev,
+                        ClassID.LICENSE_PLATE,
+                        lp_threshold,
+                        nms_iou_threshold,
                     )
                 )
 
@@ -503,11 +508,7 @@ def visualize_video(
     reader = getattr(video_reader_clip, "reader", None)
     if reader is not None:
         nframes = getattr(reader, "nframes", None)
-        if (
-            isinstance(nframes, (int, float))
-            and math.isfinite(nframes)
-            and nframes > 0
-        ):
+        if isinstance(nframes, (int, float)) and math.isfinite(nframes) and nframes > 0:
             total_frames = int(nframes)
     if total_frames is None:
         duration = getattr(video_reader_clip, "duration", None)
@@ -523,14 +524,26 @@ def visualize_video(
 
     ffmpeg_writer = subprocess.Popen(
         [
-            "ffmpeg", "-y", "-loglevel", "error",
-            "-f", "rawvideo", "-vcodec", "rawvideo",
-            "-s", f"{width}x{height}",
-            "-pix_fmt", "rgb24",
-            "-r", str(output_fps),
-            "-i", "-",
-            "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "rawvideo",
+            "-vcodec",
+            "rawvideo",
+            "-s",
+            f"{width}x{height}",
+            "-pix_fmt",
+            "rgb24",
+            "-r",
+            str(output_fps),
+            "-i",
+            "-",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
             temp_video_path,
         ],
         stdin=subprocess.PIPE,
@@ -550,8 +563,10 @@ def visualize_video(
                 read_iter = frame_iterator
                 if tqdm is not None:
                     read_iter = tqdm(
-                        frame_iterator, total=total_frames,
-                        desc="Processing frames (multi-GPU)", unit="frame",
+                        frame_iterator,
+                        total=total_frames,
+                        desc="Processing frames (multi-GPU)",
+                        unit="frame",
                     )
 
                 def _flush_chunk(chunk_frames: List[np.ndarray]) -> None:
@@ -564,10 +579,13 @@ def visualize_video(
                         for i, bgr_img in enumerate(chunk_frames):
                             gpu_idx = i % n_workers
                             fut = pool.submit(
-                                _process_frame_on_gpu, i, bgr_img,
+                                _process_frame_on_gpu,
+                                i,
+                                bgr_img,
                                 gpu_face_detectors[gpu_idx],
                                 gpu_lp_detectors[gpu_idx],
-                                scale_factor_detections, devices[gpu_idx],
+                                scale_factor_detections,
+                                devices[gpu_idx],
                             )
                             futures[fut] = i
                         for fut in as_completed(futures):
@@ -643,10 +661,7 @@ def visualize_video(
 
                         blur_start_time = time.time()
                         visualized_bgr = visualize(
-                            bgr_image.copy(),
-                            detections,
-                            scale_factor_detections,
-                            0.7
+                            bgr_image.copy(), detections, scale_factor_detections, 0.7
                         )
                         blur_end_time = time.time()
                         total_blur_time += blur_end_time - blur_start_time
@@ -705,13 +720,22 @@ def visualize_video(
     try:
         mux_result = subprocess.run(
             [
-                "ffmpeg", "-y", "-loglevel", "error",
-                "-i", temp_video_path,
-                "-i", input_video_path,
-                "-c:v", "copy",
-                "-c:a", "aac",
-                "-map", "0:v:0",
-                "-map", "1:a:0?",
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                temp_video_path,
+                "-i",
+                input_video_path,
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0?",
                 "-shortest",
                 output_video_path,
             ],
@@ -729,6 +753,8 @@ def visualize_video(
         shutil.move(temp_video_path, output_video_path)
 
     logger.info(f"Successfully output video to:{output_video_path}")
+
+
 # def visualize_video(
 #     input_video_path: str,
 #     face_detector: Optional[EgoblurDetector],

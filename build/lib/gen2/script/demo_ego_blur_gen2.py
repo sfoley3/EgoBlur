@@ -215,6 +215,7 @@ def _get_threshold(
 #     image_fg = cv2.bitwise_and(image_fg, image_fg, mask=mask)
 #     image = cv2.add(image_bg, image_fg)
 
+
 #     return image
 def visualize(
     image: np.ndarray,
@@ -237,9 +238,7 @@ def visualize(
     for box in detections:
         # Scale bbox if requested
         if scale_factor_detections != 1.0:
-            box = scale_box(
-                box, w_img, h_img, scale_factor_detections
-            )
+            box = scale_box(box, w_img, h_img, scale_factor_detections)
 
         x1, y1, x2, y2 = map(int, box[:4])
 
@@ -462,14 +461,20 @@ def visualize_video(
             for dev in devices[1:]:
                 gpu_face_detectors.append(
                     _create_detector(
-                        face_model_path, dev, ClassID.FACE,
-                        face_threshold, nms_iou_threshold,
+                        face_model_path,
+                        dev,
+                        ClassID.FACE,
+                        face_threshold,
+                        nms_iou_threshold,
                     )
                 )
                 gpu_lp_detectors.append(
                     _create_detector(
-                        lp_model_path, dev, ClassID.LICENSE_PLATE,
-                        lp_threshold, nms_iou_threshold,
+                        lp_model_path,
+                        dev,
+                        ClassID.LICENSE_PLATE,
+                        lp_threshold,
+                        nms_iou_threshold,
                     )
                 )
 
@@ -500,11 +505,7 @@ def visualize_video(
     reader = getattr(video_reader_clip, "reader", None)
     if reader is not None:
         nframes = getattr(reader, "nframes", None)
-        if (
-            isinstance(nframes, (int, float))
-            and math.isfinite(nframes)
-            and nframes > 0
-        ):
+        if isinstance(nframes, (int, float)) and math.isfinite(nframes) and nframes > 0:
             total_frames = int(nframes)
     if total_frames is None:
         duration = getattr(video_reader_clip, "duration", None)
@@ -527,8 +528,10 @@ def visualize_video(
                 read_iter = frame_iterator
                 if tqdm is not None:
                     read_iter = tqdm(
-                        frame_iterator, total=total_frames,
-                        desc="Reading frames", unit="frame",
+                        frame_iterator,
+                        total=total_frames,
+                        desc="Reading frames",
+                        unit="frame",
                     )
                 for frame in read_iter:
                     if frame.ndim == 2:
@@ -622,10 +625,7 @@ def visualize_video(
 
                         blur_start_time = time.time()
                         visualized_bgr = visualize(
-                            bgr_image.copy(),
-                            detections,
-                            scale_factor_detections,
-                            0.7
+                            bgr_image.copy(), detections, scale_factor_detections, 0.7
                         )
                         blur_end_time = time.time()
                         total_blur_time += blur_end_time - blur_start_time
@@ -647,7 +647,9 @@ def visualize_video(
     finally:
         video_reader_clip.close()
 
-    if not visualized_frames or (use_multi_gpu and any(f is None for f in visualized_frames)):
+    if not visualized_frames or (
+        use_multi_gpu and any(f is None for f in visualized_frames)
+    ):
         raise ValueError(
             f"No frames were processed from {input_video_path}. "
             "Please verify the input video file."
@@ -697,6 +699,8 @@ def visualize_video(
         if audio_source is not None:
             audio_source.close()
         clip.close()
+
+
 # def visualize_video(
 #     input_video_path: str,
 #     face_detector: Optional[EgoblurDetector],
