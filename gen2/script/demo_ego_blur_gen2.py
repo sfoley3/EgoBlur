@@ -46,7 +46,6 @@ from gen2.script.utils import (
     validate_inputs,
     write_image,
 )
-from moviepy.editor import ImageSequenceClip
 from moviepy.video.io.VideoFileClip import VideoFileClip
 from tqdm.auto import tqdm
 
@@ -266,12 +265,20 @@ def visualize(
         if roi.size == 0:
             continue
 
-        # Reasonable rectangular blur kernel (odd numbers)
+        # Reasonable blur kernel (odd numbers)
         k_w = max(15, (x2 - x1) // 3 | 1)
         k_h = max(15, (blur_y2 - y1) // 3 | 1)
 
         blurred = cv2.blur(roi, (k_w, k_h))
-        image_out[y1:blur_y2, x1:x2] = blurred
+
+        # Apply blur only within an elliptical mask
+        mask = np.zeros(roi.shape[:2], dtype=np.uint8)
+        center = (roi.shape[1] // 2, roi.shape[0] // 2)
+        axes = (roi.shape[1] // 2, roi.shape[0] // 2)
+        cv2.ellipse(mask, center, axes, 0, 0, 360, 255, -1)
+        roi_out = roi.copy()
+        roi_out[mask == 255] = blurred[mask == 255]
+        image_out[y1:blur_y2, x1:x2] = roi_out
 
     return image_out
 
